@@ -18,7 +18,7 @@
 #     3.4. Last resort: add file ignore to `extend-exclude` list.
 
 [files]
-extend-exclude = ["*.bin", "*.bmp", "package-lock.json"]
+extend-exclude = ["*.bin", "*.bmp", "package-lock.json", "vendor/"]
 
 [default.extend-words]
 # "look-alikes" is a legitimate hyphenated word

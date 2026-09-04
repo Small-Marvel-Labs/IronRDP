@@ -76,13 +76,13 @@ jobs:
       classifier-lane: ${{ steps.resolve.outputs.classifier-lane }}
       reviewer-pipeline-lane: ${{ steps.resolve.outputs.reviewer-pipeline-lane }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
 
       - id: resolve
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           PULL_REQUEST_URL_BASE: ${{ github.server_url }}/${{ github.repository }}/pull
         with:
@@ -136,13 +136,13 @@ jobs:
       completed: ${{ steps.gate.outputs.completed }}
       reason: ${{ steps.gate.outputs.reason }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
 
       - id: gate
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
@@ -182,13 +182,13 @@ jobs:
       ok: ${{ steps.analyze.outputs.ok }}
       size-label: ${{ steps.analyze.outputs.size-label }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
 
       - id: analyze
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
         with:
@@ -237,13 +237,13 @@ jobs:
       owner: ${{ steps.claim.outputs.owner }}
       lease: ${{ steps.claim.outputs.lease }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
 
       - id: claim
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
@@ -282,13 +282,13 @@ jobs:
       quota: ${{ steps.limit.outputs.quota }}
       allowed: ${{ steps.limit.outputs.allowed }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
 
       - id: limit
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           AUTHOR: ${{ needs.resolve-pr.outputs.author }}
@@ -474,7 +474,7 @@ jobs:
 
       - id: overlap-candidates
         name: Fetch bounded overlap candidates
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
         with:
@@ -502,7 +502,7 @@ jobs:
             ));
 
       - name: Write classifier context
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
         with:
@@ -537,13 +537,13 @@ jobs:
     outputs:
       state: ${{ steps.resolve.outputs.state }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
 
       - id: resolve
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
@@ -609,13 +609,13 @@ jobs:
       specialist-reviewers: ${{ steps.gate.outputs.specialist-reviewers }}
       required-reviewers: ${{ steps.gate.outputs.required-reviewers }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
 
       - id: gate
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -776,13 +776,13 @@ jobs:
       owner: ${{ steps.claim.outputs.owner }}
       lease: ${{ steps.claim.outputs.lease }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
 
       - id: claim
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
@@ -857,7 +857,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
@@ -865,14 +865,14 @@ jobs:
       - name: Download review resolver artifacts
         if: needs.review-pipeline.result != 'skipped'
         continue-on-error: true
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: review-{final,report,validation,aggregate}-${{ needs.resolve-pr.outputs.head-sha }}
           path: review-pipeline
           merge-multiple: true
 
       - id: resolve
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
@@ -1015,7 +1015,7 @@ jobs:
 
       - name: Upload review state
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: review-state-${{ needs.resolve-pr.outputs.head-sha }}
           path: review-state.json
@@ -1040,7 +1040,7 @@ jobs:
       issues: write
       checks: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: master
           persist-credentials: false
@@ -1048,12 +1048,12 @@ jobs:
       - name: Download review state
         if: needs.resolve-review-state.result == 'success'
         continue-on-error: true
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: review-state-${{ needs.resolve-pr.outputs.head-sha }}
           path: workflow-state/review
 
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           REVIEW_REQUESTED: ${{ needs.resolve-pr.outputs.review-requested }}
