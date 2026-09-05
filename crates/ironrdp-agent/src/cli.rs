@@ -829,13 +829,6 @@ impl FromStr for PropOverride {
     }
 }
 
-/// Applies `--prop` overrides onto `properties`, in argument order (last one for a given key wins).
-fn apply_prop_overrides(properties: &mut PropertySet, overrides: Vec<PropOverride>) {
-    for over in overrides {
-        properties.insert(over.key, over.value);
-    }
-}
-
 /// Parses an RDP scancode in decimal or `0x`-prefixed hexadecimal.
 fn parse_scancode(input: &str) -> Result<u16, core::num::ParseIntError> {
     if let Some(hex) = input.strip_prefix("0x").or_else(|| input.strip_prefix("0X")) {
@@ -1409,7 +1402,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn daemon_settings(args: DaemonArgs) -> anyhow::Result<crate::daemon_lifecycle::Settings> {
-    let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
+    let overlay = load_properties(args.overlay.as_deref(), args.prop)?;
     #[cfg(windows)]
     let drives = args.rdpdr_drives;
     #[cfg(not(windows))]
@@ -1465,9 +1458,9 @@ fn should_auto_start(backend: Backend, explicit_endpoint: bool, no_auto_start: b
     backend == Backend::Daemon && !no_auto_start && (!explicit_endpoint || auto_start)
 }
 
-/// Loads an operator-provided overlay [`PropertySet`] from an optional `.rdp` file, then layers
-/// `--prop` overrides on top. Returns an empty set when neither is given.
-fn load_overlay(path: Option<&Path>, prop_overrides: Vec<PropOverride>) -> anyhow::Result<PropertySet> {
+/// Loads a [`PropertySet`] from an optional `.rdp` file, then layers `--prop` overrides on top
+/// in argument order (last one for a given key wins). Returns an empty set when neither is given.
+fn load_properties(path: Option<&Path>, prop_overrides: Vec<PropOverride>) -> anyhow::Result<PropertySet> {
     let mut properties = PropertySet::new();
     if let Some(path) = path {
         let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -1477,7 +1470,9 @@ fn load_overlay(path: Option<&Path>, prop_overrides: Vec<PropOverride>) -> anyho
             }
         }
     }
-    apply_prop_overrides(&mut properties, prop_overrides);
+    for over in prop_overrides {
+        properties.insert(over.key, over.value);
+    }
     Ok(properties)
 }
 
@@ -1485,19 +1480,7 @@ fn load_overlay(path: Option<&Path>, prop_overrides: Vec<PropOverride>) -> anyho
 /// [`PropertySet`]. Configuration validation happens daemon-side (via
 /// `ConfigBuilder::from_property_set`); this only parses and merges the inputs.
 fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
-    let mut properties = PropertySet::new();
-
-    if let Some(path) = &args.rdp_file {
-        let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        if let Err(errors) = ironrdp_rdpfile::load(&mut properties, &text) {
-            for error in &errors {
-                eprintln!("warning: skipped entry in {}: {error}", path.display());
-            }
-        }
-    }
-
-    // `--prop` overrides win over the .rdp file but lose to the named flags below.
-    apply_prop_overrides(&mut properties, args.prop);
+    let mut properties = load_properties(args.rdp_file.as_deref(), args.prop)?;
 
     // Named CLI flags win over everything above.
     if let Some(server) = args.server {
