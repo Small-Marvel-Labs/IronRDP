@@ -408,6 +408,8 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
         }
     }
 
+    dst.inner[dst.pos..].fill(0);
+
     Ok(())
 }
 
