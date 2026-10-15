@@ -4,7 +4,7 @@ use std::os::fd::{AsFd, AsRawFd};
 
 use cap_std::fs::{Dir, File, Metadata, MetadataExt, OpenOptions, ReadDir};
 use ironrdp_core::impl_as_any;
-use ironrdp_pdu::{PduResult, encode_err, pdu_other_err};
+use ironrdp_pdu::{PduResult, encode_err};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::*;
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
@@ -63,13 +63,12 @@ impl Default for NixRdpdrBackend {
     }
 }
 
-fn redirected_root(root: &std::io::Result<Dir>) -> PduResult<&Dir> {
-    root.as_ref().map_err(|error| {
-        pdu_other_err!(
-            "failed to open redirected root",
-            source: std::io::Error::new(error.kind(), error.to_string())
-        )
-    })
+/// The shared directory, or `None` when it could not be opened. Requests then fail with an
+/// NTSTATUS like any other missing path, rather than ending the session.
+fn redirected_root(root: &std::io::Result<Dir>) -> Option<&Dir> {
+    root.as_ref()
+        .inspect_err(|error| warn!(%error, "redirected drive root is unavailable"))
+        .ok()
 }
 
 fn relative_path(path: &str) -> String {
@@ -617,9 +616,9 @@ pub(crate) fn set_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    let root = redirected_root(&backend.root)?;
-    match backend.file_path_map.get(&req_inner.device_io_request.file_id).cloned() {
-        Some(file) => {
+    let file = backend.file_path_map.get(&req_inner.device_io_request.file_id).cloned();
+    match file.zip(redirected_root(&backend.root)) {
+        Some((file, root)) => {
             match &req_inner.set_buffer {
                 FileInformationClass::Rename(info) => {
                     let to = relative_path(&info.file_name);
@@ -747,7 +746,11 @@ pub(crate) fn make_query_dir_resp(
                 0
             };
             let file_name = &file_full_path[file_last_slash..];
-            match root.metadata(&file_full_path) {
+            // A link that points outside the share cannot be followed; list the link itself.
+            match root
+                .metadata(&file_full_path)
+                .or_else(|_| root.symlink_metadata(&file_full_path))
+            {
                 Ok(meta) => {
                     let file_attribute = get_file_attributes(&meta, file_name);
                     if file_class == FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION {
@@ -795,9 +798,9 @@ pub(crate) fn query_directory(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryDirectoryRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    let root = redirected_root(&backend.root)?;
-    match backend.file_path_map.get(&req_inner.device_io_request.file_id) {
-        Some(parent_pos_for_next) => {
+    let parent = backend.file_path_map.get(&req_inner.device_io_request.file_id);
+    match parent.zip(redirected_root(&backend.root)) {
+        Some((parent_pos_for_next, root)) => {
             let mut find_file_name = None;
             if req_inner.initial_query > 0 {
                 if req_inner.path.ends_with('*') {
@@ -889,11 +892,15 @@ pub(crate) fn create_drive(
     req_inner: DeviceCreateRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = backend.file_id;
-    backend.file_id = backend
-        .file_id
-        .checked_add(1)
-        .ok_or_else(|| pdu_other_err!("file IDs exhausted"))?;
-    let root = redirected_root(&backend.root)?;
+    let (Some(next_file_id), Some(root)) = (backend.file_id.checked_add(1), redirected_root(&backend.root)) else {
+        let res = RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
+            device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::UNSUCCESSFUL),
+            file_id,
+            information: Information::empty(),
+        });
+        return Ok(vec![SvcMessage::from(res)]);
+    };
+    backend.file_id = next_file_id;
     let path = relative_path(&req_inner.path);
     // first process directory
     match root.metadata(&path) {
