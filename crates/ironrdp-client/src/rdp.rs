@@ -13,6 +13,8 @@ use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
 
 #[cfg(feature = "clipboard")]
+use ironrdp_cliprdr::backend::ClipboardMessage;
+#[cfg(feature = "clipboard")]
 pub use ironrdp_cliprdr::backend::CliprdrBackendFactory;
 use ironrdp_connector::connection_activation::ConnectionActivationState;
 use ironrdp_connector::{ConnectionResult, ConnectorResult};
@@ -23,6 +25,10 @@ use ironrdp_dvc::DvcMessageBatch;
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 #[cfg(any(all(windows, feature = "dvc-com-plugin"), feature = "sound"))]
 use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DynamicChannelId};
+#[cfg(all(windows, feature = "dvc-com-plugin"))]
+use ironrdp_dvc_com_plugin::load_dvc_plugin_listeners;
+#[cfg(feature = "dvc-pipe-proxy")]
+use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 use ironrdp_echo::client::EchoClient;
 use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_graphics::image_processing::PixelFormat;
@@ -41,6 +47,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
+use ironrdp_rail::pdu::{ExecutePdu, ExecuteResultPdu};
 #[cfg(feature = "rdpdr")]
 pub use ironrdp_rdpdr::backend::{
     RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter,
@@ -49,6 +56,12 @@ use ironrdp_rdpei::RdpeiClient;
 use ironrdp_rdpei::pdu::TouchEventPdu;
 #[cfg(feature = "location")]
 use ironrdp_rdpel::client::LocationClient;
+#[cfg(all(windows, feature = "webauthn"))]
+use ironrdp_rdpewa::{RdpewaClient, RdpewaClientListener};
+#[cfg(all(windows, feature = "webauthn"))]
+use ironrdp_rdpewa_native::{WindowsRdpewaBackend, WindowsRdpewaSessionState};
+#[cfg(feature = "sound")]
+use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
 #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
 use ironrdp_session::ActiveStage;
 use ironrdp_session::image::DecodedImage;
@@ -68,22 +81,8 @@ use tracing::{debug, info, trace, warn};
 
 #[cfg(feature = "clipboard")]
 use crate::config::ClipboardType;
-#[cfg(feature = "clipboard")]
-use ironrdp_cliprdr::backend::ClipboardMessage;
-#[cfg(all(windows, feature = "dvc-com-plugin"))]
-use ironrdp_dvc_com_plugin::load_dvc_plugin_listeners;
-#[cfg(feature = "dvc-pipe-proxy")]
-use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
-#[cfg(all(windows, feature = "webauthn"))]
-use ironrdp_rdpewa::{RdpewaClient, RdpewaClientListener};
-#[cfg(all(windows, feature = "webauthn"))]
-use ironrdp_rdpewa_native::{WindowsRdpewaBackend, WindowsRdpewaSessionState};
-#[cfg(feature = "sound")]
-use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
-
 use crate::config::{Config, RDCleanPathConfig, Transport};
 use crate::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
-use ironrdp_rail::pdu::{ExecutePdu, ExecuteResultPdu};
 
 // ── Public event types ────────────────────────────────────────────────────────
 
@@ -832,8 +831,9 @@ impl RdpClient {
                 (ClipboardType::Enable, None) => {
                     #[cfg(windows)]
                     {
-                        use crate::clipboard::ClientClipboardMessageProxy;
                         use ironrdp_cliprdr_native::WinClipboard;
+
+                        use crate::clipboard::ClientClipboardMessageProxy;
                         match WinClipboard::new(ClientClipboardMessageProxy::new(self.input_event_sender.clone())) {
                             Ok(win_cb) => {
                                 cliprdr_factory = Some(win_cb.backend_factory());
@@ -3978,6 +3978,11 @@ async fn active_session(
                     }
                 }
                 ActiveStageOutput::SaveSessionInfo { logon_complete: false } => {}
+                ActiveStageOutput::ServerRedirect(_) => {
+                    return Ok(RdpControlFlow::TerminatedGracefully(GracefulDisconnectReason::Other(
+                        "server redirection is not supported".to_owned(),
+                    )));
+                }
                 ActiveStageOutput::DeactivateAll => {
                     // Deactivation-Reactivation Sequence:
                     // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
@@ -4412,8 +4417,6 @@ fn process_clipboard_message(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[cfg(feature = "rdpdr")]
     use core::any::TypeId;
     #[cfg(feature = "rdpdr")]
@@ -4435,6 +4438,8 @@ mod tests {
     use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
     #[cfg(feature = "rdpdr")]
     use ironrdp_svc::{StaticChannelSet, SvcProcessor as _};
+
+    use super::*;
 
     fn mouse_move(x: u16, y: u16) -> FastPathInputEvent {
         FastPathInputEvent::MouseEvent(MousePdu {

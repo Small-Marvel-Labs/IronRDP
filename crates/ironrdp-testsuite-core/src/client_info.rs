@@ -98,6 +98,7 @@ pub static CLIENT_INFO_UNICODE: LazyLock<ClientInfo> = LazyLock::new(|| ClientIn
         password: String::from(""),
         domain: Some(String::from("NTDEV")),
     },
+    raw_password: None,
     alternate_shell: String::from(""),
     work_dir: String::from(""),
     extra_info: ExtendedClientInfo {

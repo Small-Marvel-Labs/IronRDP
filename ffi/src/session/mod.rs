@@ -326,7 +326,9 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::PointerPosition { .. } => ActiveStageOutputType::PointerPosition,
                 ironrdp::session::ActiveStageOutput::PointerBitmap { .. } => ActiveStageOutputType::PointerBitmap,
                 ironrdp::session::ActiveStageOutput::WindowingOrders(_) => ActiveStageOutputType::WindowingOrders,
-                ironrdp::session::ActiveStageOutput::Terminate { .. } => ActiveStageOutputType::Terminate,
+                // Following a redirection is not exposed, so it ends the session.
+                ironrdp::session::ActiveStageOutput::Terminate { .. }
+                | ironrdp::session::ActiveStageOutput::ServerRedirect(_) => ActiveStageOutputType::Terminate,
                 ironrdp::session::ActiveStageOutput::DeactivateAll => ActiveStageOutputType::DeactivateAll,
                 ironrdp::session::ActiveStageOutput::MultitransportRequest { .. } => {
                     ActiveStageOutputType::MultitransportRequest
@@ -405,6 +407,9 @@ pub mod ffi {
         pub fn get_terminate(&self) -> Result<Box<GracefulDisconnectReason>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::Terminate(reason) => Ok(GracefulDisconnectReason(reason.clone())),
+                ironrdp::session::ActiveStageOutput::ServerRedirect(_) => Ok(GracefulDisconnectReason(
+                    ironrdp::session::GracefulDisconnectReason::Other("server redirection is not supported".to_owned()),
+                )),
                 _ => Err(IncorrectEnumTypeError::on_variant("Terminate")
                     .of_enum("ActiveStageOutput")
                     .into()),

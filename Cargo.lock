@@ -3147,6 +3147,7 @@ name = "ironrdp-pdu"
 version = "0.9.0"
 dependencies = [
  "arbitrary",
+ "base64 0.22.1",
  "bit_field",
  "bitflags 2.13.2",
  "byteorder",

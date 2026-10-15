@@ -46,10 +46,13 @@ const BIAS_SIZE: usize = 4;
 /// [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET)
 ///
 /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientInfo {
     pub credentials: Credentials,
+    /// Sent as the password field instead of `credentials.password`, byte for byte. A Server Redirection
+    /// PDU's logon cookie goes here, as it need not be valid UTF-16. Never set by decoding.
+    pub raw_password: Option<Vec<u8>>,
     pub code_page: u32,
     pub flags: ClientInfoFlags,
     pub compression_type: CompressionType,
@@ -58,8 +61,29 @@ pub struct ClientInfo {
     pub extra_info: ExtendedClientInfo,
 }
 
+impl fmt::Debug for ClientInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // NOTE: do not show `raw_password`, which is a secret like the user password
+        f.debug_struct("ClientInfo")
+            .field("credentials", &self.credentials)
+            .field("code_page", &self.code_page)
+            .field("flags", &self.flags)
+            .field("compression_type", &self.compression_type)
+            .field("alternate_shell", &self.alternate_shell)
+            .field("work_dir", &self.work_dir)
+            .field("extra_info", &self.extra_info)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ClientInfo {
     const NAME: &'static str = "ClientInfo";
+
+    fn password_size(&self, character_set: CharacterSet) -> usize {
+        self.raw_password
+            .as_ref()
+            .map_or_else(|| string_len(&self.credentials.password, character_set), Vec::len)
+    }
 
     pub const FIXED_PART_SIZE: usize = CODE_PAGE_SIZE
         + FLAGS_SIZE
@@ -94,7 +118,7 @@ impl Encode for ClientInfo {
             string_len(self.credentials.username.as_str(), character_set), in: dst)?);
         dst.write_u16(cast_length!(
             "password length",
-            string_len(self.credentials.password.as_str(), character_set), in: dst)?);
+            self.password_size(character_set), in: dst)?);
         dst.write_u16(cast_length!(
             "alternate shell length",
             string_len(self.alternate_shell.as_str(), character_set), in: dst)?);
@@ -104,7 +128,14 @@ impl Encode for ClientInfo {
 
         utils::write_string_to_cursor(dst, domain.as_str(), character_set, true)?;
         utils::write_string_to_cursor(dst, self.credentials.username.as_str(), character_set, true)?;
-        utils::write_string_to_cursor(dst, self.credentials.password.as_str(), character_set, true)?;
+        match &self.raw_password {
+            Some(raw_password) => {
+                ensure_size!(in: dst, size: raw_password.len());
+                dst.write_slice(raw_password);
+                utils::write_string_to_cursor(dst, "", character_set, true)?;
+            }
+            None => utils::write_string_to_cursor(dst, self.credentials.password.as_str(), character_set, true)?,
+        }
         utils::write_string_to_cursor(dst, self.alternate_shell.as_str(), character_set, true)?;
         utils::write_string_to_cursor(dst, self.work_dir.as_str(), character_set, true)?;
 
@@ -134,7 +165,7 @@ impl Encode for ClientInfo {
             + WORK_DIR_LENGTH_SIZE
             + string_len(domain.as_str(), character_set)
                 + string_len(self.credentials.username.as_str(), character_set)
-                + string_len(self.credentials.password.as_str(), character_set)
+                + self.password_size(character_set)
                 + string_len(self.alternate_shell.as_str(), character_set)
                 + string_len(self.work_dir.as_str(), character_set)
             + usize::from(character_set.as_u16()) * 5 // null terminator
@@ -192,6 +223,7 @@ impl<'de> Decode<'de> for ClientInfo {
 
         Ok(Self {
             credentials,
+            raw_password: None,
             code_page,
             flags,
             compression_type,

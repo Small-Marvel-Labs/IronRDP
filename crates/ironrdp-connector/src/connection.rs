@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
+use ironrdp_pdu::rdp::rdstls::{RDSTLS_HINT, RdstlsAuthResponse, RdstlsCapabilities, RdstlsPasswordAuthRequest};
+use ironrdp_pdu::rdp::server_redirection::{ServerRedirectionFlags, ServerRedirectionPdu};
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
@@ -211,6 +213,13 @@ pub enum ClientConnectorState {
     Credssp {
         selected_protocol: nego::SecurityProtocol,
     },
+    /// Waiting for the server's RDSTLS Capabilities PDU.
+    RdstlsWaitCapabilities {
+        selected_protocol: nego::SecurityProtocol,
+    },
+    RdstlsWaitAuthResponse {
+        selected_protocol: nego::SecurityProtocol,
+    },
     BasicSettingsExchangeSendInitial {
         selected_protocol: nego::SecurityProtocol,
     },
@@ -308,6 +317,8 @@ impl State for ClientConnectorState {
             Self::ConnectionInitiationWaitConfirm { .. } => "ConnectionInitiationWaitResponse",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
             Self::Credssp { .. } => "Credssp",
+            Self::RdstlsWaitCapabilities { .. } => "RdstlsWaitCapabilities",
+            Self::RdstlsWaitAuthResponse { .. } => "RdstlsWaitAuthResponse",
             Self::BasicSettingsExchangeSendInitial { .. } => "BasicSettingsExchangeSendInitial",
             Self::BasicSettingsExchangeWaitResponse { .. } => "BasicSettingsExchangeWaitResponse",
             Self::ChannelConnection { .. } => "ChannelConnection",
@@ -350,6 +361,10 @@ pub struct ClientConnector {
     pub message_channel_id: Option<u16>,
     cluster_data: Option<gcc::ClientClusterData>,
     load_balance_info: Option<String>,
+    /// RDSTLS credentials from a Server Redirection PDU.
+    rdstls: Option<RdstlsPasswordAuthRequest>,
+    /// Password field of a Server Redirection PDU, passed back unchanged in the Client Info PDU.
+    redirection_password: Option<Vec<u8>>,
     /// X.224 negotiation flags supplied by the server.
     response_flags: nego::ResponseFlags,
     /// Multitransport flags the server advertised in its GCC
@@ -386,6 +401,8 @@ impl ClientConnector {
             message_channel_id: None,
             cluster_data: None,
             load_balance_info: None,
+            rdstls: None,
+            redirection_password: None,
             response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
@@ -427,6 +444,128 @@ impl ClientConnector {
         self
     }
 
+    /// Connect as instructed by a Server Redirection PDU ([MS-RDPBCGR] 3.2.5.13.1).
+    ///
+    /// Sends its load-balancing info as the routing token unless it names a target address, reports its
+    /// session ID, and logs on as its user name and domain. A PK-encrypted password is presented through
+    /// RDSTLS. Any other password, or the logon cookie standing in for it, goes back unchanged in the
+    /// Client Info PDU, while CredSSP keeps the user's own password unless there is none.
+    ///
+    /// The caller picks the host: the target named in the PDU, or the same host again when it carries
+    /// load-balancing info and no target address. The caller also checks that host's TLS certificate,
+    /// against [`ServerRedirectionPdu::target_certificate`] when present.
+    pub fn with_server_redirection(mut self, redirection: &ServerRedirectionPdu) -> ConnectorResult<Self> {
+        self.rdstls = None;
+        self.redirection_password = None;
+
+        // MS-RDPBCGR 2.2.13.1 passes the load-balancing info on only when no target address is given,
+        // as mstsc does. Servers end it with CRLF and sometimes NUL, neither of which belongs to it.
+        self.load_balance_info = None;
+        if let Some(info) = redirection
+            .load_balance_info
+            .as_deref()
+            .filter(|_| !redirection.flags.contains(ServerRedirectionFlags::TARGET_NET_ADDRESS))
+        {
+            let token = info.split(|&byte| byte == 0).next().unwrap_or_default();
+            let token = token.strip_suffix(b"\r\n").unwrap_or(token);
+            let printable = token.iter().all(|byte| (0x20..=0x7E).contains(byte));
+            if token.len() > nego::MAX_ROUTING_TOKEN_LENGTH || !printable {
+                return Err(reason_err!(
+                    "ServerRedirection",
+                    "unsupported load balance info: expected up to {} printable ASCII bytes, got {}",
+                    nego::MAX_ROUTING_TOKEN_LENGTH,
+                    token.len(),
+                ));
+            }
+            if !token.is_empty() {
+                self.load_balance_info = Some(String::from_utf8_lossy(token).into_owned());
+            }
+        }
+
+        let redirection_version = self
+            .cluster_data
+            .as_ref()
+            .map_or(gcc::RedirectionVersion::V5, |cluster| cluster.redirection_version);
+        // A valid session ID of 0 requests the console session, as `mstsc /admin` does.
+        let mut flags = gcc::RedirectionFlags::REDIRECTION_SUPPORTED;
+        if redirection.session_id != 0 {
+            flags |= gcc::RedirectionFlags::REDIRECTED_SESSION_FIELD_VALID;
+        }
+        self.cluster_data = Some(gcc::ClientClusterData {
+            flags,
+            redirection_version,
+            redirected_session_id: redirection.session_id,
+        });
+
+        let has_line_break = |value: &String| value.contains(['\r', '\n']);
+        if redirection.username.as_ref().is_some_and(has_line_break)
+            || redirection.domain.as_ref().is_some_and(has_line_break)
+        {
+            return Err(reason_err!(
+                "ServerRedirection",
+                "redirected user name or domain contains a line break"
+            ));
+        }
+
+        let logon_name = redirection
+            .username
+            .as_deref()
+            .or(self.config.credentials.username())
+            .unwrap_or_default();
+        // sspi refuses a domain next to a user name that already names one, as `user@domain` or
+        // `DOMAIN\user` do.
+        if let Some(domain) = redirection
+            .domain
+            .as_ref()
+            .filter(|_| !logon_name.contains(['\\', '@']))
+        {
+            self.config.domain = Some(domain.clone());
+        }
+
+        let pk_encrypted = redirection
+            .flags
+            .contains(ServerRedirectionFlags::PASSWORD_IS_PK_ENCRYPTED);
+        if let (true, Some(blob)) = (pk_encrypted, &redirection.password) {
+            self.rdstls = Some(RdstlsPasswordAuthRequest {
+                redirection_guid: redirection.redirection_guid.clone().unwrap_or_default(),
+                username: logon_name.to_owned(),
+                domain: self.config.domain.clone().unwrap_or_default(),
+                password: blob.clone(),
+            });
+        }
+
+        let crate::Credentials::UsernamePassword { username, password } = &mut self.config.credentials else {
+            return Ok(self);
+        };
+        if let Some(redirected_username) = &redirection.username {
+            username.clone_from(redirected_username);
+        }
+
+        if let Some(blob) = &redirection.password {
+            // The Client Info PDU passes it back byte for byte and asks for automatic logon, as FreeRDP does.
+            self.redirection_password = Some(blob.clone());
+            self.config.autologon = true;
+
+            if pk_encrypted {
+                // RDSTLS presents the blob instead, so the user's own password has no use on this hop.
+                password.clear();
+            } else if password.is_empty() {
+                // CredSSP keeps the user's own password; only without one does the redirection's stand in.
+                // Cookies need not be valid UTF-16, so decoding is lossy.
+                let code_units: Vec<u16> = blob
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&unit| u16::from_le_bytes(unit))
+                    .take_while(|&unit| unit != 0)
+                    .collect();
+                *password = String::from_utf16_lossy(&code_units);
+            }
+        }
+
+        Ok(self)
+    }
+
     /// Send the initial X.224 request with an explicit security protocol set.
     pub fn initiate_with_security_protocol(
         &mut self,
@@ -450,6 +589,10 @@ impl ClientConnector {
     }
 
     fn enabled_security_protocols(&self) -> ConnectorResult<nego::SecurityProtocol> {
+        if self.rdstls.is_some() {
+            return Ok(nego::SecurityProtocol::RDSTLS | nego::SecurityProtocol::SSL);
+        }
+
         let mut security_protocol = nego::SecurityProtocol::empty();
 
         if self.config.enable_tls {
@@ -1043,6 +1186,8 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
             ClientConnectorState::Credssp { .. } => None,
+            ClientConnectorState::RdstlsWaitCapabilities { .. }
+            | ClientConnectorState::RdstlsWaitAuthResponse { .. } => Some(&RDSTLS_HINT),
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
             ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::ChannelConnection { channel_connection, .. } => channel_connection.next_pdu_hint(),
@@ -1084,6 +1229,18 @@ impl Sequence for ClientConnector {
         received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
+        let redirect_io_channel_id = match &self.state {
+            ClientConnectorState::ConnectTimeAutoDetection { io_channel_id, .. }
+            | ClientConnectorState::LicensingExchange { io_channel_id, .. }
+            | ClientConnectorState::MultitransportBootstrapping { io_channel_id, .. } => Some(*io_channel_id),
+            _ => None,
+        };
+        if let Some(io_channel_id) = redirect_io_channel_id
+            && crate::redirection::check_server_redirection(input, io_channel_id)?
+        {
+            return Ok(Written::Nothing);
+        }
+
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {
@@ -1120,6 +1277,14 @@ impl Sequence for ClientConnector {
 
                 // PROTOCOL_RDP is encoded as an empty bitset. `intersects` is false for two empty
                 // sets, so treat standard RDP security as a special case.
+                // The credentials of a PK-encrypted redirection only work through RDSTLS.
+                if self.rdstls.is_some() && !selected_protocol.contains(nego::SecurityProtocol::RDSTLS) {
+                    return Err(reason_err!(
+                        "Initiation",
+                        "redirect target selected {selected_protocol} instead of RDSTLS",
+                    ));
+                }
+
                 let protocol_ok = if selected_protocol.is_standard_rdp_security() {
                     requested_protocol.is_standard_rdp_security()
                 } else {
@@ -1148,6 +1313,9 @@ impl Sequence for ClientConnector {
                 let next_state = if selected_protocol.is_standard_rdp_security() {
                     debug!("Standard RDP security selected; skipping TLS and CredSSP");
                     ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
+                } else if selected_protocol.contains(nego::SecurityProtocol::RDSTLS) {
+                    debug!("Begin RDSTLS authentication");
+                    ClientConnectorState::RdstlsWaitCapabilities { selected_protocol }
                 } else if selected_protocol
                     .intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX)
                 {
@@ -1166,6 +1334,47 @@ impl Sequence for ClientConnector {
                 Written::Nothing,
                 ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
             ),
+
+            //== RDSTLS ==//
+            // Present the credentials of a Server Redirection PDU (MS-RDPBCGR 5.4.5.3).
+            ClientConnectorState::RdstlsWaitCapabilities { selected_protocol } => {
+                let capabilities = decode::<RdstlsCapabilities>(input).map_err(ConnectorError::decode)?;
+                if !capabilities.supports_version_1() {
+                    return Err(reason_err!(
+                        "RDSTLS",
+                        "server does not support RDSTLS version 1 (supported versions: {:#06x})",
+                        capabilities.supported_versions,
+                    ));
+                }
+                let request = self
+                    .rdstls
+                    .as_ref()
+                    .ok_or_else(|| general_err!("server selected RDSTLS without a redirection"))?;
+                let written = ironrdp_core::encode_buf(request, output).map_err(ConnectorError::encode)?;
+
+                (
+                    Written::from_size(written)?,
+                    ClientConnectorState::RdstlsWaitAuthResponse { selected_protocol },
+                )
+            }
+            ClientConnectorState::RdstlsWaitAuthResponse { selected_protocol } => {
+                let response = decode::<RdstlsAuthResponse>(input).map_err(ConnectorError::decode)?;
+                if response.result_code != RdstlsAuthResponse::SUCCESS {
+                    return Err(ConnectorError::new(
+                        "RDSTLS authentication",
+                        ConnectorErrorKind::Reason(format!(
+                            "server rejected the redirected logon: {} ({:#010x})",
+                            response.description(),
+                            response.result_code,
+                        )),
+                    ));
+                }
+
+                (
+                    Written::Nothing,
+                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
+                )
+            }
 
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.
@@ -1300,8 +1509,12 @@ impl Sequence for ClientConnector {
             } => {
                 debug!("Secure Settings Exchange");
 
-                let client_info =
-                    create_client_info_pdu(&self.config, &self.client_addr, self.auto_reconnect_cookie.as_ref());
+                let client_info = create_client_info_pdu(
+                    &self.config,
+                    &self.client_addr,
+                    self.auto_reconnect_cookie.as_ref(),
+                    self.redirection_password.as_deref(),
+                );
 
                 debug!(message = ?client_info, "Send");
 
@@ -1776,6 +1989,7 @@ fn create_client_info_pdu(
     config: &Config,
     client_addr: &SocketAddr,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
+    redirection_password: Option<&[u8]>,
 ) -> rdp::ClientInfoPdu {
     use ironrdp_pdu::rdp::ClientInfoPdu;
     use ironrdp_pdu::rdp::client_info::{
@@ -1841,6 +2055,7 @@ fn create_client_info_pdu(
             password: config.credentials.secret().to_owned(),
             domain: config.domain.clone(),
         },
+        raw_password: redirection_password.map(<[u8]>::to_vec),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags,
         compression_type,
@@ -1935,7 +2150,7 @@ mod tests {
             support_dyn_vc_gfx_protocol: false,
         };
 
-        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None).client_info;
 
         assert!(client_info.flags.contains(ClientInfoFlags::RAIL));
         assert!(client_info.alternate_shell.is_empty());
@@ -1991,12 +2206,12 @@ mod tests {
             support_dyn_vc_gfx_protocol: false,
         };
 
-        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None).client_info;
         assert!(client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
         assert!(!client_info.flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
 
         config.enable_audio_capture = false;
-        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None).client_info;
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
     }
 

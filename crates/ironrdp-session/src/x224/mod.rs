@@ -11,6 +11,7 @@ use ironrdp_pdu::rdp::headers::{
 use ironrdp_pdu::rdp::heartbeat::HeartbeatPdu;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::rdp::server_redirection::{ServerRedirectionFlags, ServerRedirectionPdu};
 use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{
@@ -87,6 +88,9 @@ pub enum ProcessorOutput {
     /// The server may send this after activation when the client advertises
     /// `RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU`.
     MonitorLayout(Vec<Monitor>),
+    /// Server Redirection PDU ([MS-RDPBCGR] 2.2.13). The client should close this connection and
+    /// connect again as the PDU describes, see `ClientConnector::with_server_redirection`.
+    ServerRedirect(Box<ServerRedirectionPdu>),
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +294,10 @@ impl Processor {
             };
             outputs.extend(self.process_io_channel(part_ctx, bulk_decompressor)?);
             offset += total_length;
+            // A redirection ends the session, and an optional pad byte may follow it (MS-RDPBCGR 2.2.13.3.1).
+            if matches!(outputs.last(), Some(ProcessorOutput::ServerRedirect(_))) {
+                break;
+            }
         }
 
         Ok(outputs)
@@ -314,6 +322,14 @@ impl Processor {
                 Ok(Vec::new())
             }
             IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
+            IoChannelPdu::ServerRedirect(redirection) => {
+                if redirection.flags.contains(ServerRedirectionFlags::NO_REDIRECT) {
+                    debug!("Ignoring Server Redirection PDU with LB_NOREDIRECT");
+                    Ok(Vec::new())
+                } else {
+                    Ok(vec![ProcessorOutput::ServerRedirect(redirection)])
+                }
+            }
         }
     }
 

@@ -1729,6 +1729,7 @@ mod tests {
                     password: String::new(),
                     domain: None,
                 },
+                raw_password: None,
                 code_page: 0,
                 flags: ClientInfoFlags::UNICODE | ClientInfoFlags::COMPRESSION,
                 compression_type: CompressionType::K64,

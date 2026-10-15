@@ -25,6 +25,7 @@ qoiz = ["qoi"]
 arbitrary = ["alloc", "dep:arbitrary", "bitflags/arbitrary"]
 
 [dependencies]
+base64 = "0.22"
 bitflags = "2.11"
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["std"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public

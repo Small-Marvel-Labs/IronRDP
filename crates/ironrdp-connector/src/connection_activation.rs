@@ -142,6 +142,14 @@ impl Sequence for ConnectionActivationSequence {
         received_at: Option<MonotonicInstant>,
         output: &mut ironrdp_core::WriteBuf,
     ) -> ConnectorResult<Written> {
+        if matches!(
+            self.state,
+            ConnectionActivationState::CapabilitiesExchange | ConnectionActivationState::ConnectionFinalization { .. }
+        ) && crate::redirection::check_server_redirection(input, self.io_channel_id)?
+        {
+            return Ok(Written::Nothing);
+        }
+
         let (written, next_state) = match mem::take(&mut self.state) {
             ConnectionActivationState::Consumed | ConnectionActivationState::Finalized { .. } => {
                 return Err(general_err!(

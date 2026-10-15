@@ -9,6 +9,7 @@ pub mod connection_activation;
 mod connection_finalization;
 pub mod credssp;
 mod license_exchange;
+mod redirection;
 mod server_name;
 
 use core::any::Any;
@@ -441,6 +442,9 @@ pub enum ConnectorErrorKind {
     General,
     Custom,
     Negotiation(NegotiationFailure),
+    /// The server sent a Server Redirection PDU ([MS-RDPBCGR] 2.2.13) instead of continuing the
+    /// connection. Connect again with [`ClientConnector::with_server_redirection`].
+    ServerRedirection(Box<ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu>),
 }
 
 impl fmt::Display for ConnectorErrorKind {
@@ -454,6 +458,7 @@ impl fmt::Display for ConnectorErrorKind {
             ConnectorErrorKind::General => write!(f, "general error"),
             ConnectorErrorKind::Custom => write!(f, "custom error"),
             ConnectorErrorKind::Negotiation(failure) => write!(f, "negotiation failure: {failure}"),
+            ConnectorErrorKind::ServerRedirection(_) => write!(f, "server redirection"),
         }
     }
 }
@@ -469,6 +474,7 @@ impl core::error::Error for ConnectorErrorKind {
             ConnectorErrorKind::Custom => None,
             ConnectorErrorKind::General => None,
             ConnectorErrorKind::Negotiation(failure) => Some(failure),
+            ConnectorErrorKind::ServerRedirection(_) => None,
         }
     }
 }
