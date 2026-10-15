@@ -69,7 +69,9 @@ pub enum CertificateValidation {
     Strict,
     /// Accept any peer certificate and server name, preserving historic behavior.
     ///
-    /// This disables TLS authentication and is vulnerable to on-path attacks.
+    /// The server must still prove it holds the certificate's key, so pinning the returned
+    /// certificate afterwards authenticates the peer. Without such a check this policy is
+    /// vulnerable to on-path attacks.
     #[default]
     DangerouslyAcceptInvalidCertificate,
 }

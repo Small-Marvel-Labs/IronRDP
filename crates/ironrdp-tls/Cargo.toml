@@ -21,6 +21,11 @@ name = "native_tls"
 path = "tests/native_tls.rs"
 required-features = ["native-tls"]
 
+[[test]]
+name = "rustls"
+path = "tests/rustls.rs"
+required-features = ["rustls"]
+
 [features]
 default = [] # No default feature, the user must choose a TLS backend by enabling the appropriate feature.
 # The rustls backend. `rustls` keeps using the aws-lc-rs crypto provider (unchanged
@@ -42,6 +47,7 @@ rustls-no-provider = [
 rustls-verifier = [
     "dep:rustls-native-certs",
     "dep:tokio-rustls",
+    "dep:x509-cert",
     "tokio-rustls/logging",
     "tokio-rustls/tls12",
 ]
