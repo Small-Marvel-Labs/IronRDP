@@ -209,7 +209,3 @@ opt-level = 3
 # FIXME: We need to catch up with Diplomat upstream again, but this is a significant amount of work.
 # In the meantime, we use this forked version which fixes an undefined behavior in the code expanded by the bridge macro.
 diplomat = { git = "https://github.com/CBenoit/diplomat", rev = "6dc806e80162b6b39509a04a2835744236cd2396" }
-# Every sspi release after 0.21.0 requires picky 7.0.0-rc.25, which conflicts with the picky rc.23 pin
-# kept for quantum-rdp's russh. This is sspi 0.21.3 with its picky, rsa and RustCrypto pins set back
-# to the versions sspi 0.21.0 used.
-sspi = { path = "vendor/sspi" }
