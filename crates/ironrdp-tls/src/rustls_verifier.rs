@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio_rustls::rustls;
 use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, SubjectPublicKeyInfoDer};
+use tokio_rustls::rustls::pki_types::{ServerName, SubjectPublicKeyInfoDer};
 use x509_cert::der::asn1::AnyRef;
 use x509_cert::der::{Decode as _, Encode as _};
 
@@ -207,7 +207,9 @@ impl ServerCertVerifier for NoCertificateVerification {
 
 /// The certificate's public key. As nothing else about the certificate is validated, nothing else is
 /// parsed: webpki would refuse certificates it otherwise has no use for, such as X.509 v1 ones.
-fn certificate_key(cert: &CertificateDer<'_>) -> Result<x509_cert::spki::SubjectPublicKeyInfoOwned, rustls::Error> {
+fn certificate_key(
+    cert: &rustls::pki_types::CertificateDer<'_>,
+) -> Result<x509_cert::spki::SubjectPublicKeyInfoOwned, rustls::Error> {
     x509_cert::Certificate::from_der(cert)
         .map(|cert| cert.tbs_certificate().subject_public_key_info().clone())
         .map_err(|_| bad_encoding())
