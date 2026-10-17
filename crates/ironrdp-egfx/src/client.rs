@@ -587,8 +587,12 @@ impl GraphicsPipelineClient {
             // Surface operations
             GfxPdu::SolidFill(pdu) => {
                 trace!(surface_id = pdu.surface_id, "SolidFill");
-                self.compositor
-                    .solid_fill(pdu.surface_id, &pdu.fill_pixel, &pdu.rectangles);
+                if !self
+                    .compositor
+                    .solid_fill(pdu.surface_id, &pdu.fill_pixel, &pdu.rectangles)
+                {
+                    return Err(pdu_other_err!("SolidFill exceeds the per-command pixel budget"));
+                }
                 self.handler.on_solid_fill(&pdu);
                 Ok(vec![])
             }
@@ -598,12 +602,14 @@ impl GraphicsPipelineClient {
                     dst = pdu.destination_surface_id,
                     "SurfaceToSurface"
                 );
-                self.compositor.surface_to_surface(
+                if !self.compositor.surface_to_surface(
                     pdu.source_surface_id,
                     pdu.destination_surface_id,
                     &pdu.source_rectangle,
                     &pdu.destination_points,
-                );
+                ) {
+                    return Err(pdu_other_err!("SurfaceToSurface exceeds the per-command pixel budget"));
+                }
                 self.handler.on_surface_to_surface(&pdu);
                 Ok(vec![])
             }
@@ -626,8 +632,12 @@ impl GraphicsPipelineClient {
                     surface_id = pdu.surface_id,
                     "CacheToSurface"
                 );
-                self.compositor
-                    .cache_to_surface(pdu.cache_slot, pdu.surface_id, &pdu.destination_points);
+                if !self
+                    .compositor
+                    .cache_to_surface(pdu.cache_slot, pdu.surface_id, &pdu.destination_points)
+                {
+                    return Err(pdu_other_err!("CacheToSurface exceeds the per-command pixel budget"));
+                }
                 self.handler.on_cache_to_surface(&pdu);
                 Ok(vec![])
             }

@@ -105,6 +105,20 @@ impl Surface {
             height: self.height,
         }
     }
+
+    /// Whether drawing every `(x, y, w, h)` rect stays within a few repaints of
+    /// the surface. Checked before drawing: a short PDU can list thousands of
+    /// whole-surface rects, each filled pixel by pixel.
+    fn admits_work(&self, rects: impl Iterator<Item = (u16, u16, u16, u16)>) -> bool {
+        const MAX_REPAINTS: usize = 4;
+        let budget = usize::from(self.width) * usize::from(self.height) * MAX_REPAINTS;
+        rects
+            .filter(|&(x, y, w, h)| x < self.width && y < self.height && w != 0 && h != 0)
+            .try_fold(budget, |left, (x, y, w, h)| {
+                left.checked_sub(usize::from(w.min(self.width - x)) * usize::from(h.min(self.height - y)))
+            })
+            .is_some()
+    }
 }
 
 /// A mutable view of an RGBA8888 canvas: its pixel buffer and dimensions.
@@ -303,7 +317,22 @@ impl Compositor {
     }
 
     /// Fill each rectangle of a surface with a solid, opaque color (`SolidFill`).
-    pub(crate) fn solid_fill(&mut self, surface_id: u16, color: &Color, rects: &[ExclusiveRectangle]) {
+    ///
+    /// Returns `false`, drawing nothing, when the rects exceed the surface's work budget.
+    pub(crate) fn solid_fill(&mut self, surface_id: u16, color: &Color, rects: &[ExclusiveRectangle]) -> bool {
+        if let Some(surface) = self.surfaces.get(&surface_id) {
+            let work = rects.iter().map(|rect| {
+                (
+                    rect.left,
+                    rect.top,
+                    rect.right.saturating_sub(rect.left),
+                    rect.bottom.saturating_sub(rect.top),
+                )
+            });
+            if !surface.admits_work(work) {
+                return false;
+            }
+        }
         let px = [color.r, color.g, color.b, 0xFF];
         for rect in rects {
             let x = rect.left;
@@ -315,23 +344,25 @@ impl Compositor {
             }
             self.record_dirty(surface_id, x, y, w, h);
         }
+        true
     }
 
     /// Copy a rectangle from one surface to points on another (`SurfaceToSurface`;
     /// a copy or an on-screen scroll when source and destination are the same
     /// surface). The source region is read once; each destination point receives a
-    /// copy.
+    /// copy. Returns `false`, drawing nothing, when the copies exceed the
+    /// destination's work budget.
     pub(crate) fn surface_to_surface(
         &mut self,
         src_id: u16,
         dst_id: u16,
         src_rect: &ExclusiveRectangle,
         dst_points: &[Point],
-    ) {
+    ) -> bool {
         // Read the source region into an owned tile first, so a scroll within one
         // surface (src_id == dst_id) reads pre-move pixels and never aliases.
         let Some(src) = self.surfaces.get(&src_id) else {
-            return;
+            return true;
         };
         // Clamp the copy to the source surface: the tile is exactly the valid
         // source pixels, so a malformed rectangle can't drive an oversized
@@ -346,6 +377,11 @@ impl Compositor {
             .bottom
             .saturating_sub(src_rect.top)
             .min(src.height.saturating_sub(src_rect.top));
+        if let Some(dst) = self.surfaces.get(&dst_id)
+            && !dst.admits_work(dst_points.iter().map(|point| (point.x, point.y, w, h)))
+        {
+            return false;
+        }
         let tile = copy_region(&src.data, src.width, src_rect.left, src_rect.top, w, h);
 
         if let Some(dst) = self.surfaces.get_mut(&dst_id) {
@@ -356,6 +392,7 @@ impl Compositor {
         for point in dst_points {
             self.record_dirty(dst_id, point.x, point.y, w, h);
         }
+        true
     }
 
     /// Copy a surface rectangle into a cache slot (`SurfaceToCache`). The cache is
@@ -417,12 +454,18 @@ impl Compositor {
     }
 
     /// Render a cached tile onto a surface at each destination point
-    /// (`CacheToSurface`).
-    pub(crate) fn cache_to_surface(&mut self, cache_slot: u16, surface_id: u16, dst_points: &[Point]) {
+    /// (`CacheToSurface`). Returns `false`, drawing nothing, when the copies exceed
+    /// the surface's work budget.
+    pub(crate) fn cache_to_surface(&mut self, cache_slot: u16, surface_id: u16, dst_points: &[Point]) -> bool {
         let Some(tile) = self.cache.get(&cache_slot) else {
-            return;
+            return true;
         };
         let (w, h) = (tile.width, tile.height);
+        if let Some(surface) = self.surfaces.get(&surface_id)
+            && !surface.admits_work(dst_points.iter().map(|point| (point.x, point.y, w, h)))
+        {
+            return false;
+        }
 
         // `cache` and `surfaces` are disjoint fields, so the tile stays borrowed
         // across the blits rather than being copied to satisfy the borrow checker.
@@ -436,6 +479,7 @@ impl Compositor {
         for point in dst_points {
             self.record_dirty(surface_id, point.x, point.y, w, h);
         }
+        true
     }
 
     /// Evict a cache slot (`EvictCacheEntry`).
@@ -1266,7 +1310,7 @@ mod tests {
             r: 0x33,
             xa: 0,
         };
-        let repeated = vec![rect(0, 0, 512, 512); 4096];
+        let repeated = vec![rect(0, 0, 16, 16); 4096];
         c.solid_fill(1, &color, &repeated);
         c.end_frame();
 
