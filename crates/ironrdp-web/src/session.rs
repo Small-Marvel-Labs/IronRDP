@@ -1533,6 +1533,7 @@ fn build_config(
         enable_server_pointer: true,
         autologon: false,
         enable_audio_playback: false,
+        play_audio_on_server: false,
         enable_audio_capture: false,
         request_data: None,
         pointer_software_rendering: false,

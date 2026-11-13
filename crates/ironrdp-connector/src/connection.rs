@@ -2025,6 +2025,10 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 
+    if config.play_audio_on_server {
+        flags |= ClientInfoFlags::REMOTE_CONSOLE_AUDIO;
+    }
+
     if config.enable_audio_capture {
         flags |= ClientInfoFlags::AUDIO_CAPTURE;
     }
@@ -2139,6 +2143,7 @@ mod tests {
             request_data: None,
             autologon: false,
             enable_audio_playback: false,
+            play_audio_on_server: false,
             enable_audio_capture: false,
             performance_flags: Default::default(),
             license_cache: None,
@@ -2195,6 +2200,7 @@ mod tests {
             request_data: None,
             autologon: false,
             enable_audio_playback: true,
+            play_audio_on_server: false,
             enable_audio_capture: true,
             performance_flags: Default::default(),
             license_cache: None,
@@ -2260,6 +2266,7 @@ mod tests {
             request_data: None,
             autologon: false,
             enable_audio_playback: false,
+            play_audio_on_server: false,
             enable_audio_capture: false,
             performance_flags: Default::default(),
             license_cache: None,

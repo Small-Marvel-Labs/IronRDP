@@ -1983,6 +1983,7 @@ impl ConfigBuilder {
             enable_server_pointer: self.enable_server_pointer.unwrap_or(true),
             autologon: self.autologon.unwrap_or(false),
             enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
+            play_audio_on_server: false,
             enable_audio_capture: self.enable_audio_capture.unwrap_or(false),
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),

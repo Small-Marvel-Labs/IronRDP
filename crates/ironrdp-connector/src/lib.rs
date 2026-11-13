@@ -260,6 +260,9 @@ pub struct Config {
     /// If true, local audio playback is enabled and `INFO_NOAUDIOPLAYBACK` is left clear
     /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
     pub enable_audio_playback: bool,
+    /// If true, the server plays the session's sound on its own audio device and
+    /// `INFO_REMOTECONSOLEAUDIO` is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
+    pub play_audio_on_server: bool,
     /// If true, client microphone capture is enabled and `INFO_AUDIOCAPTURE` is set
     /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
     pub enable_audio_capture: bool,

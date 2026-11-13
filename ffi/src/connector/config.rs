@@ -234,6 +234,7 @@ pub mod ffi {
                 enable_server_pointer: self.enable_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
                 enable_audio_playback: self.no_audio_playback.unwrap_or(true),
+                play_audio_on_server: false,
                 enable_audio_capture: false,
                 request_data: None,
                 compression_type: None,

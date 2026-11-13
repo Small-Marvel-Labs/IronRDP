@@ -265,6 +265,7 @@ fn build_config(
         request_data: None,
         autologon: false,
         enable_audio_playback: false,
+        play_audio_on_server: false,
         enable_audio_capture: false,
         compression_type,
         pointer_software_rendering: true,

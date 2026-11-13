@@ -58,6 +58,7 @@ fn test_config() -> ironrdp_connector::Config {
         request_data: None,
         autologon: false,
         enable_audio_playback: false,
+        play_audio_on_server: false,
         enable_audio_capture: false,
         license_cache: None,
         compression_type: None,
