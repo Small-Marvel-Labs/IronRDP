@@ -139,7 +139,11 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// previously sent format data request.
     ///
     /// If data is not available anymore, [`FormatDataResponse`] will have its `is_error` field
-    /// set to `true`.
+    /// set to `true`. A request the remote leaves unanswered for the transfer timeout gets such
+    /// an error response from [`crate::Cliprdr::drive_timeouts`], so every request sent is answered
+    /// exactly once, in the order the requests were sent. A request that
+    /// [`crate::Cliprdr::initiate_paste`] does not send, because too many are unanswered, gets
+    /// its error response at once.
     fn on_format_data_response(&mut self, response: FormatDataResponse<'_>);
 
     /// Processes remote's request to send file contents.

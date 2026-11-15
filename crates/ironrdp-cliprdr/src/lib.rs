@@ -46,6 +46,12 @@ struct PendingFormatDataRequest {
     /// response is classified by what was requested, not by the state at
     /// response time.
     is_file_list: bool,
+    /// Backend clock value when the request was sent.
+    sent_at_ms: u64,
+    /// The backend was told that this request failed, because the remote did
+    /// not answer in time. The entry stays queued so that a late answer is
+    /// paired with this request and dropped, not paired with the next one.
+    abandoned: bool,
 }
 
 /// [MS-RDPECLIP] 2.2.5.3 / 2.2.5.4 - Tracks state of a file contents transfer
@@ -432,12 +438,15 @@ pub struct Cliprdr<R: Role> {
     /// a single slot then pairs the earlier request's response with the later
     /// request.
     ///
-    /// Deliberately no timeout: a response carries no ID, so a request given up
-    /// on could not be told apart from a late answer, and that late answer
-    /// would then pair with the next request — the misattribution this queue
-    /// exists to prevent. A conformant peer answers every request, with
-    /// CB_RESPONSE_FAIL if it can't produce the data (3.1.5.4.3);
-    /// [`MAX_PENDING_FORMAT_DATA_REQUESTS`] bounds one that doesn't.
+    /// A request not answered within `transfer_timeout` is failed to the
+    /// backend by [`Cliprdr::drive_timeouts`] but stays queued as abandoned: a
+    /// response carries no ID, so removing the entry would pair a late answer
+    /// with the next request — the misattribution this queue exists to
+    /// prevent. A late answer to an abandoned request is dropped. A conformant
+    /// peer answers every request, with CB_RESPONSE_FAIL if it can't produce
+    /// the data (3.1.5.4.3). For one that doesn't, the queue holds at most
+    /// [`MAX_PENDING_FORMAT_DATA_REQUESTS`] entries: when it is full, a new
+    /// request replaces the oldest abandoned one.
     pending_format_data_requests: VecDeque<PendingFormatDataRequest>,
 
     /// Stores the local file list when initiating a file copy operation.
@@ -939,6 +948,17 @@ impl<R: Role> Cliprdr<R> {
     pub fn initiate_paste(&mut self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcMessages<R>> {
         self.require_ready("initiate_paste")?;
 
+        // At the cap, an abandoned request makes room: the backend was already
+        // told that it failed, so only its late answer could still come.
+        if self.pending_format_data_requests.len() >= MAX_PENDING_FORMAT_DATA_REQUESTS
+            && self
+                .pending_format_data_requests
+                .front()
+                .is_some_and(|request| request.abandoned)
+        {
+            self.pending_format_data_requests.pop_front();
+        }
+
         if self.pending_format_data_requests.len() >= MAX_PENDING_FORMAT_DATA_REQUESTS {
             warn!(
                 pending = self.pending_format_data_requests.len(),
@@ -954,8 +974,11 @@ impl<R: Role> Cliprdr<R> {
         // receive response with contents via `FormatDataResponse` PDU.
         // Track the request so we can correlate the response correctly.
         let is_file_list = Some(requested_format) == self.remote_file_list_format_id;
-        self.pending_format_data_requests
-            .push_back(PendingFormatDataRequest { is_file_list });
+        self.pending_format_data_requests.push_back(PendingFormatDataRequest {
+            is_file_list,
+            sent_at_ms: self.backend.now_ms(),
+            abandoned: false,
+        });
 
         if is_file_list {
             trace!(format_id = ?requested_format, "User initiated paste for FileGroupDescriptorW");
@@ -966,6 +989,14 @@ impl<R: Role> Cliprdr<R> {
         });
 
         Ok(vec![into_cliprdr_message(pdu)].into())
+    }
+
+    /// Drops the request queued by the last [`Self::initiate_paste`], for a
+    /// caller that could not send its message. The remote never saw the
+    /// request, so no response will come for it, and keeping it would pair
+    /// every later response with the wrong request.
+    pub fn retract_paste(&mut self) {
+        self.pending_format_data_requests.pop_back();
     }
 
     /// Generates the next unique clip_data_id for lock operations.
@@ -1172,12 +1203,14 @@ impl<R: Role> Cliprdr<R> {
     /// Fast paths:
     /// Processes expired locks, stale file transfers, and abandoned uploads.
     ///
-    /// This method performs three cleanup sweeps:
+    /// This method performs four cleanup sweeps:
     /// 1. **Outgoing locks**: Sends Unlock PDUs for locks that have exceeded their inactivity
     ///    timeout (default 60s) or max lifetime (default 2h)
     /// 2. **Stale requests**: Removes file contents requests older than `transfer_timeout` and
     ///    sends synthetic error responses to the backend
-    /// 3. **Abandoned uploads**: Cleans up locked file list snapshots with no recent activity
+    /// 3. **Unanswered pastes**: Sends a synthetic error response to the backend for each format
+    ///    data request older than `transfer_timeout`, and drops the late answer if one arrives
+    /// 4. **Abandoned uploads**: Cleans up locked file list snapshots with no recent activity
     ///
     /// Callers must drive this method from a periodic timer in their event loop
     /// (e.g., every 5 seconds). The returned PDUs must be sent on the CLIPRDR channel.
@@ -1305,6 +1338,26 @@ impl<R: Role> Cliprdr<R> {
                 count = stale_stream_ids.len(),
                 "Stale file contents request cleanup completed"
             );
+        }
+
+        // Fail format data requests the remote left unanswered, oldest first,
+        // so the backend gets one answer per request in the order it sent them.
+        let mut timed_out = 0usize;
+        for request in self
+            .pending_format_data_requests
+            .iter_mut()
+            .filter(|request| !request.abandoned && transfer_timeout_ms <= now.saturating_sub(request.sent_at_ms))
+        {
+            request.abandoned = true;
+            timed_out += 1;
+        }
+        for _ in 0..timed_out {
+            warn!(
+                timeout_secs = transfer_timeout_ms / 1000,
+                "Format data request timed out, sending synthetic error to backend"
+            );
+            self.backend
+                .on_format_data_response(OwnedFormatDataResponse::new_error());
         }
 
         // Cleanup locked file list snapshots with no recent FileContentsRequest
@@ -1786,10 +1839,12 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 // Correlate this response with the oldest unanswered FormatDataRequest.
                 // Only intercept as a file list if the request was for the file list format;
                 // forward all other responses (text, images, etc.) to the backend.
-                let is_file_list_response = self
-                    .pending_format_data_requests
-                    .pop_front()
-                    .is_some_and(|request| request.is_file_list);
+                let request = self.pending_format_data_requests.pop_front();
+                if request.is_some_and(|request| request.abandoned) {
+                    debug!("Dropping the late answer to a format data request that timed out");
+                    return Ok(Vec::new());
+                }
+                let is_file_list_response = request.is_some_and(|request| request.is_file_list);
 
                 if is_file_list_response {
                     if response.is_error() {

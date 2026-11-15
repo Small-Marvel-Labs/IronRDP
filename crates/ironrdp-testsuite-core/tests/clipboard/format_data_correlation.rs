@@ -159,10 +159,11 @@ fn a_file_list_request_is_classified_when_it_is_sent() {
     assert!(backend(&cliprdr).data_responses.is_empty());
 }
 
-/// A response is never given up on, however late it arrives: a response
-/// carries no ID, so a late answer to an abandoned request would pair with the
-/// next request instead. Here the text request is answered ten minutes late,
-/// after the timer has run and a file list request has been queued behind it.
+/// A request that timed out keeps its place, however late its answer arrives:
+/// a response carries no ID, so the late answer would otherwise pair with the
+/// next request. Here the text request is answered ten minutes late, after the
+/// timer has failed it and a file list request has been queued behind it. The
+/// late text is dropped and the file list is still recognised.
 #[test]
 fn a_late_response_is_still_correlated() {
     let mut cliprdr = ready_client();
@@ -177,8 +178,8 @@ fn a_late_response_is_still_correlated() {
 
     let seen = backend(&cliprdr);
     assert_eq!(seen.file_lists.len(), 1, "the file list must be recognised");
-    assert_eq!(seen.data_responses, vec![text_response().data().to_vec()]);
-    assert_eq!(seen.error_responses, 0, "nothing was answered with a synthetic error");
+    assert!(seen.data_responses.is_empty(), "the late text is dropped");
+    assert_eq!(seen.error_responses, 1, "the text request was failed when it timed out");
 }
 
 /// A failed response still answers its request: the one behind it stays
